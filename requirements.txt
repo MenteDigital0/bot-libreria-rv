@@ -1,3 +1,5 @@
 flask
 twilio
 gunicorn
+gspread
+oauth2client
