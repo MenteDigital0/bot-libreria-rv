@@ -14,9 +14,13 @@ client_gs = gspread.authorize(creds)
 
 # Conexión al Excel (Asegúrate que el nombre sea exacto)
 nombre_excel = "Libreria RV Datos"
-hoja_prod = client_gs.open(nombre_excel).worksheet("Productos")
-hoja_vent = client_gs.open(nombre_excel).worksheet("Ventas")
-
+try:
+    spreadsheet = client_gs.open(nombre_excel)
+    hoja_prod = spreadsheet.worksheet("Productos")
+    hoja_vent = spreadsheet.worksheet("Ventas")
+    print("✅ Conexión exitosa al Excel")
+except Exception as e:
+    print(f"❌ Error de conexión: {e}")
 # Twilio (Reemplaza con tus datos reales)
 ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID')
 AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN')
