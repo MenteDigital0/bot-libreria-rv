@@ -24,6 +24,12 @@ except Exception as e:
 # Twilio (Reemplaza con tus datos reales)
 ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID')
 AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN')
+# --- LÍNEAS DE PRUEBA ---
+if not ACCOUNT_SID or not AUTH_TOKEN:
+    print("❌ ERROR: No se cargaron las credenciales de Twilio desde Render")
+else:
+    print(f"✅ Credenciales detectadas (SID termina en: {ACCOUNT_SID[-4:]})")
+# ------------------------
 NUMERO_BOT = 'whatsapp:+14155238886'
 NUMERO_ENCARGADA = 'whatsapp:+51921264742' # <--- PON TU CEL AQUÍ PARA PROBAR
 client_twilio = Client(ACCOUNT_SID, AUTH_TOKEN)
