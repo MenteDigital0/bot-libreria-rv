@@ -27,6 +27,11 @@ def db_save(num, step, orden="", total=0.0, prod_nom="", cant=0):
     cursor.execute("INSERT OR REPLACE INTO sesiones VALUES (?, ?, ?, ?, ?, ?)", (num, step, orden, total, prod_nom, cant))
     conn.commit()
     conn.close()
+    # Dentro de init_db()
+cursor.execute('''CREATE TABLE IF NOT EXISTS control_encargada 
+                  (id INTEGER PRIMARY KEY, ultima_orden TEXT)''')
+# Insertamos una fila inicial si no existe
+cursor.execute("INSERT OR IGNORE INTO control_encargada (id, ultima_orden) VALUES (1, '')")
 
 def db_get(num):
     conn = sqlite3.connect(DB_NAME)
@@ -52,6 +57,21 @@ def db_get_by_order(orden_ref):
     row = cursor.fetchone()
     conn.close()
     return row # Retorna (num, total)
+
+def set_ultima_orden(orden):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE control_encargada SET ultima_orden = ? WHERE id = 1", (orden,))
+    conn.commit()
+    conn.close()
+
+def get_ultima_orden():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT ultima_orden FROM control_encargada WHERE id = 1")
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else ""
 
 # --- CONFIGURACIÓN GOOGLE & TWILIO ---
 json_env = os.environ.get('GOOGLE_JSON_CONTENT')
@@ -83,26 +103,30 @@ def reply():
     sesion = db_get(num)
 
     # --- LÓGICA PARA LA ENCARGADA ---
-    if num == NUMERO_ENCARGADA and ("SI" in body or "NO" in body):
-        partes = body.split()
-        if len(partes) >= 2:
-            accion, orden_ref = partes[0], partes[1]
-            busqueda = db_get_by_order(orden_ref)
+# --- LÓGICA PARA LA ENCARGADA (Responder 1 o 2) ---
+    if num == NUMERO_ENCARGADA and (body == "1" or body == "2"):
+        orden_ref = get_ultima_orden()
+        if not orden_ref:
+            res.message("⚠️ No hay ninguna orden pendiente de validación.")
+            return str(res)
+
+        busqueda = db_get_by_order(orden_ref)
+        if busqueda:
+            cliente_num, total = busqueda
+            if body == "1": # ES UN "SÍ"
+                client_twilio.messages.create(from_=NUMERO_BOT, to=cliente_num, 
+                    body=f"✅ *¡STOCK CONFIRMADO!*\nTotal: *S/ {total:.2f}*\n\nPor favor, yapea al *987654321* y envía tu nombre con la captura.")
+                db_save(cliente_num, "finalizar", orden=orden_ref, total=total)
+                res.message(f"✅ Confirmaste la Orden #{orden_ref}. Cliente avisado.")
+            else: # ES UN "NO"
+                client_twilio.messages.create(from_=NUMERO_BOT, to=cliente_num, 
+                    body="😔 *LO SENTIMOS*\nNo hay stock actualmente. Escribe 'MENU' para ver más.")
+                db_delete(cliente_num)
+                res.message(f"❌ Cancelaste la Orden #{orden_ref}.")
             
-            if busqueda:
-                cliente_num, total = busqueda
-                if accion == "SI":
-                    client_twilio.messages.create(from_=NUMERO_BOT, to=cliente_num, 
-                        body=f"✅ *¡STOCK CONFIRMADO!*\nTotal: *S/ {total:.2f}*\n\nPor favor, yapea al *987654321* y envía tu nombre con la captura.")
-                    db_save(cliente_num, "finalizar", orden=orden_ref, total=total)
-                else:
-                    client_twilio.messages.create(from_=NUMERO_BOT, to=cliente_num, 
-                        body="😔 *LO SENTIMOS*\nNo hay stock actualmente. Escribe 'MENU' para ver más.")
-                    db_delete(cliente_num)
-                return str(res)
-            else:
-                res.message(f"⚠️ Orden #{orden_ref} no encontrada o ya procesada.")
-                return str(res)
+            # Limpiamos la última orden para que no se repita por error
+            set_ultima_orden("") 
+            return str(res)
 
     # --- LÓGICA PARA EL CLIENTE ---
     if not sesion or body in ["HOLA", "MENU", "REINICIAR"]:
@@ -113,6 +137,9 @@ def reply():
         txt = "📚 *LIBRERÍA R&V*\n¿Qué categoría buscas?\n"
         for i, c in enumerate(categorias, 1): txt += f"*{i}.* {c}\n"
         res.message(txt)
+    set_ultima_orden(orden) # <--- AÑADE ESTO
+    client_twilio.messages.create(from_=NUMERO_BOT, to=NUMERO_ENCARGADA, 
+        body=f"❓ *¿HAY STOCK?*\nOrden: *#{orden}*\nProducto: {cant}x {sesion['p_nom']}\n\nResponde:\n*1* para SÍ\n*2* para NO")
 
     elif sesion["step"] == "cat":
         # Nota: Aquí para simplicidad volvemos a leer el excel para filtrar
