@@ -13,9 +13,11 @@ DB_NAME = "sesiones_bot.db"
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    # Guardamos: telefono, step, orden, total, producto, cantidad
     cursor.execute('''CREATE TABLE IF NOT EXISTS sesiones 
                       (num TEXT PRIMARY KEY, step TEXT, orden TEXT, total REAL, prod_nom TEXT, cant INTEGER)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS control_encargada 
+                      (id INTEGER PRIMARY KEY, ultima_orden TEXT)''')
+    cursor.execute("INSERT OR IGNORE INTO control_encargada (id, ultima_orden) VALUES (1, '')")
     conn.commit()
     conn.close()
 
@@ -27,11 +29,6 @@ def db_save(num, step, orden="", total=0.0, prod_nom="", cant=0):
     cursor.execute("INSERT OR REPLACE INTO sesiones VALUES (?, ?, ?, ?, ?, ?)", (num, step, orden, total, prod_nom, cant))
     conn.commit()
     conn.close()
-    # Dentro de init_db()
-cursor.execute('''CREATE TABLE IF NOT EXISTS control_encargada 
-                  (id INTEGER PRIMARY KEY, ultima_orden TEXT)''')
-# Insertamos una fila inicial si no existe
-cursor.execute("INSERT OR IGNORE INTO control_encargada (id, ultima_orden) VALUES (1, '')")
 
 def db_get(num):
     conn = sqlite3.connect(DB_NAME)
@@ -39,9 +36,7 @@ def db_get(num):
     cursor.execute("SELECT * FROM sesiones WHERE num = ?", (num,))
     row = cursor.fetchone()
     conn.close()
-    if row:
-        return {"step": row[1], "o": row[2], "t": row[3], "p_nom": row[4], "c": row[5]}
-    return None
+    return {"step": row[1], "o": row[2], "t": row[3], "p_nom": row[4], "c": row[5]} if row else None
 
 def db_delete(num):
     conn = sqlite3.connect(DB_NAME)
@@ -56,7 +51,7 @@ def db_get_by_order(orden_ref):
     cursor.execute("SELECT num, total FROM sesiones WHERE orden = ?", (orden_ref,))
     row = cursor.fetchone()
     conn.close()
-    return row # Retorna (num, total)
+    return row
 
 def set_ultima_orden(orden):
     conn = sqlite3.connect(DB_NAME)
@@ -79,13 +74,9 @@ creds = ServiceAccountCredentials.from_json_keyfile_dict(json.loads(json_env), [
 client_gs = gspread.authorize(creds)
 
 nombre_excel = "Libreria RV Datos"
-try:
-    spreadsheet = client_gs.open(nombre_excel)
-    hoja_prod = spreadsheet.worksheet("Productos")
-    hoja_vent = spreadsheet.worksheet("Ventas")
-    print("✅ Conexión exitosa al Excel")
-except Exception as e:
-    print(f"❌ Error de conexión: {e}")
+spreadsheet = client_gs.open(nombre_excel)
+hoja_prod = spreadsheet.worksheet("Productos")
+hoja_vent = spreadsheet.worksheet("Ventas")
 
 ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID')
 AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN')
@@ -102,47 +93,39 @@ def reply():
     
     sesion = db_get(num)
 
-    # --- LÓGICA PARA LA ENCARGADA ---
-# --- LÓGICA PARA LA ENCARGADA (Responder 1 o 2) ---
+    # --- LÓGICA PARA LA ENCARGADA (Responder 1 o 2) ---
     if num == NUMERO_ENCARGADA and (body == "1" or body == "2"):
         orden_ref = get_ultima_orden()
         if not orden_ref:
-            res.message("⚠️ No hay ninguna orden pendiente de validación.")
+            res.message("⚠️ No hay ninguna orden pendiente.")
             return str(res)
 
         busqueda = db_get_by_order(orden_ref)
         if busqueda:
             cliente_num, total = busqueda
-            if body == "1": # ES UN "SÍ"
+            if body == "1":
                 client_twilio.messages.create(from_=NUMERO_BOT, to=cliente_num, 
-                    body=f"✅ *¡STOCK CONFIRMADO!*\nTotal: *S/ {total:.2f}*\n\nPor favor, yapea al *987654321* y envía tu nombre con la captura.")
+                    body=f"✅ *¡STOCK CONFIRMADO!*\nTotal: *S/ {total:.2f}*\n\nYapea al *987654321* y envía captura.")
                 db_save(cliente_num, "finalizar", orden=orden_ref, total=total)
-                res.message(f"✅ Confirmaste la Orden #{orden_ref}. Cliente avisado.")
-            else: # ES UN "NO"
+                res.message(f"✅ Confirmaste Orden #{orden_ref}.")
+            else:
                 client_twilio.messages.create(from_=NUMERO_BOT, to=cliente_num, 
-                    body="😔 *LO SENTIMOS*\nNo hay stock actualmente. Escribe 'MENU' para ver más.")
+                    body="😔 *SIN STOCK*\nNo hay disponibilidad. Escribe MENU.")
                 db_delete(cliente_num)
-                res.message(f"❌ Cancelaste la Orden #{orden_ref}.")
-            
-            # Limpiamos la última orden para que no se repita por error
-            set_ultima_orden("") 
+                res.message(f"❌ Cancelaste Orden #{orden_ref}.")
+            set_ultima_orden("")
             return str(res)
 
     # --- LÓGICA PARA EL CLIENTE ---
     if not sesion or body in ["HOLA", "MENU", "REINICIAR"]:
         datos = hoja_prod.get_all_records()
         categorias = list(set([f["Categoría"] for f in datos]))
-        # Guardamos en DB que está eligiendo categoría
         db_save(num, "cat")
-        txt = "📚 *LIBRERÍA R&V*\n¿Qué categoría buscas?\n"
+        txt = "📚 *LIBRERÍA R&V*\n¿Qué buscas?\n"
         for i, c in enumerate(categorias, 1): txt += f"*{i}.* {c}\n"
         res.message(txt)
-    set_ultima_orden(orden) # <--- AÑADE ESTO
-    client_twilio.messages.create(from_=NUMERO_BOT, to=NUMERO_ENCARGADA, 
-        body=f"❓ *¿HAY STOCK?*\nOrden: *#{orden}*\nProducto: {cant}x {sesion['p_nom']}\n\nResponde:\n*1* para SÍ\n*2* para NO")
 
     elif sesion["step"] == "cat":
-        # Nota: Aquí para simplicidad volvemos a leer el excel para filtrar
         datos = hoja_prod.get_all_records()
         categorias = list(set([f["Categoría"] for f in datos]))
         idx = int(body) - 1 if body.isdigit() else -1
@@ -152,9 +135,9 @@ def reply():
             txt = f"📂 *{cat_sel}*\n"
             for i, p in enumerate(productos, 1):
                 txt += f"*{i}.* {p['Producto']} - S/ {p['Precio']:.2f}\n"
-            db_save(num, f"prod_{cat_sel}") # Guardamos la categoría en el step
+            db_save(num, f"prod_{cat_sel}")
             res.message(txt + "\nElige el número del producto.")
-        else: res.message("❌ Elige una categoría válida.")
+        else: res.message("❌ Elige una opción válida.")
 
     elif "prod_" in sesion["step"]:
         cat_sel = sesion["step"].replace("prod_", "")
@@ -164,24 +147,24 @@ def reply():
             p = datos[idx]
             db_save(num, "cant", prod_nom=p['Producto'], total=float(p['Precio']))
             res.message(f"¿Cuántos de *{p['Producto']}*?")
-        else: res.message("❌ Elige un número válido.")
+        else: res.message("❌ Elige un número.")
 
     elif sesion["step"] == "cant":
         if body.isdigit():
-            cant = int(body)
-            total = cant * sesion["t"]
+            cant, total = int(body), int(body) * sesion["t"]
             orden = str(random.randint(1000, 9999))
             db_save(num, "esperando_stock", orden=orden, total=total, prod_nom=sesion["p_nom"], cant=cant)
-            res.message("⏳ *Verificando Stock...*\nTe avisaremos en un momento.")
+            set_ultima_orden(orden)
+            res.message("⏳ *Verificando Stock...*")
             client_twilio.messages.create(from_=NUMERO_BOT, to=NUMERO_ENCARGADA, 
-                body=f"❓ *STOCK? ORDEN #{orden}*\n{cant}x {sesion['p_nom']}\nResponde: *SI {orden}* o *NO {orden}*")
+                body=f"❓ *STOCK?* #{orden}\n{cant}x {sesion['p_nom']}\n\n1: SÍ\n2: NO")
         else: res.message("❌ Escribe un número.")
 
     elif sesion["step"] == "finalizar":
         nombre = body.title()
         hoja_vent.append_row([datetime.now().strftime("%d/%m/%Y %H:%M"), nombre, sesion['o'], sesion['c'], sesion['p_nom'], sesion['t']])
         client_twilio.messages.create(from_=NUMERO_BOT, to=NUMERO_ENCARGADA, 
-            body=f"🚨 *PAGO RECIBIDO #{sesion['o']}*\nCliente: {nombre}", media_url=[media_url] if media_url else None)
+            body=f"🚨 *PAGO* #{sesion['o']}\nCliente: {nombre}", media_url=[media_url] if media_url else None)
         res.message(f"¡Gracias {nombre}! Pedido registrado. 🚀")
         db_delete(num)
 
