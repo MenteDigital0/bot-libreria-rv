@@ -3,3 +3,4 @@ twilio
 gunicorn
 gspread
 oauth2client
+google-generativeai
