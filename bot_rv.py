@@ -57,49 +57,52 @@ def db_delete(num):
 
 # --- CEREBRO IA (Procesa lenguaje natural) ---
 def procesar_lista_con_ia(texto_usuario, lista_precios):
-    # Convertimos la lista de precios a un texto simple para que la IA lo lea mejor
-    contexto_precios = json.dumps(lista_precios)
-    
-    prompt = f"""
-    Eres el asistente de ventas de 'Librería R&V'. 
-    Tu base de datos de productos es: {contexto_precios}
+    # 1. Limpieza de datos del Excel para la IA
+    # Esto asegura que la IA reciba 'nombre' y 'precio' aunque las columnas tengan espacios
+    datos_para_ia = []
+    for fila in lista_precios:
+        nombre = fila.get('Producto', '').strip()
+        # Intentamos obtener el precio de la columna 'Precio' o de la siguiente si está movida
+        precio = fila.get('Precio') if fila.get('Precio') else fila.get('', 0)
+        
+        if nombre and precio:
+            datos_para_ia.append({"n": nombre, "p": precio})
 
-    Pedido del cliente: "{texto_usuario}"
+    # 2. El Prompt (Instrucciones)
+    prompt = f"""
+    Eres el sistema de facturación de 'Librería R&V'.
+    BASE DE DATOS: {json.dumps(datos_para_ia)}
+    PEDIDO: "{texto_usuario}"
 
     TAREA:
-    1. Identifica qué productos de la base de datos coinciden con el pedido.
-    2. Si el cliente no dice cantidad, asume 1.
-    3. Calcula el subtotal (cantidad * precio).
-    4. Devuelve UNICAMENTE un objeto JSON con este formato:
+    - Encuentra los productos que más se parezcan al pedido.
+    - Si dicen "cuaderno", usa "Cuaderno A4 100h". Si dicen "lapiz", usa "Lapis Carbon".
+    - Calcula el total (cantidad x precio).
+    - Responde EXCLUSIVAMENTE en formato JSON:
     {{
       "total": 0.0, 
-      "items_encontrados": ["2x Cuaderno (S/ 10.00)", "1x Lapiz (S/ 1.50)"], 
+      "items_encontrados": ["2x Cuaderno A4 100h (S/ 13.00)"], 
       "no_encontrados": []
     }}
-    
-    Regla: Si un producto no está en la base de datos, ponlo en "no_encontrados". 
-    No inventes precios. Responde solo el JSON.
     """
+
     try:
         response = model_ai.generate_content(prompt)
-        # Limpiamos posibles basuras de texto que devuelva la IA
-        texto_limpio = re.search(r'\{.*\}', response.text, re.DOTALL).group()
-        return json.loads(texto_limpio)
+        
+        # 3. Extracción robusta del JSON (Uso de Regex)
+        # Esto busca cualquier cosa que esté entre llaves { }
+        match = re.search(r'\{.*\}', response.text, re.DOTALL)
+        
+        if match:
+            json_data = json.loads(match.group())
+            return json_data
+        else:
+            print("Error: La IA no devolvió un JSON válido")
+            return {"total": 0.0, "items_encontrados": [], "no_encontrados": ["Error de formato"]}
+
     except Exception as e:
-        print(f"Error en IA: {e}")
-        return {"total": 0.0, "items_encontrados": [], "no_encontrados": ["Error de lectura"]}
-
-    # 1. REINICIO O PRIMER CONTACTO
-    if not sesion or body.upper() in ["HOLA", "MENU", "REINICIAR"]:
-        db_save(num, "menu_principal")
-        msg = ("📚 *LIBRERÍA R&V*\n¡Hola! ¿Qué deseas llevar hoy?\n\n"
-               "1️⃣ *Enviar Lista:* Cotización con IA.\n"
-               "2️⃣ *Regalos:* Detalles por categorías.\n"
-               "3️⃣ *Producto Único:* Compra rápida.\n"
-               "4️⃣ *Consultas:* Hablar con nosotros.")
-        res.message(msg)
-        return str(res)
-
+        print(f"Error crítico en función procesar: {e}")
+        return {"total": 0.0, "items_encontrados": [], "no_encontrados": ["Error de conexión"]}
     # 2. LÓGICA DE SELECCIÓN DE MENÚ
     elif sesion["step"] == "menu_principal":
         if body == "1":
