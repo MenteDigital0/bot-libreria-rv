@@ -7,7 +7,7 @@ from datetime import datetime
 
 app = Flask(__name__)
 
-# --- BASE DE DATOS SQLITE ---
+# --- BASE DE DATOS SQLITE --
 DB_NAME = "sesiones_bot.db"
 
 def init_db():
@@ -160,15 +160,47 @@ def reply():
                 body=f"❓ *STOCK?* #{orden}\n{cant}x {sesion['p_nom']}\n\n1: SÍ\n2: NO")
         else: res.message("❌ Escribe un número.")
 
-    elif sesion["step"] == "finalizar":
+   elif sesion["step"] == "finalizar":
         nombre = body.title()
-        hoja_vent.append_row([datetime.now().strftime("%d/%m/%Y %H:%M"), nombre, sesion['o'], sesion['c'], sesion['p_nom'], sesion['t']])
-        client_twilio.messages.create(from_=NUMERO_BOT, to=NUMERO_ENCARGADA, 
-            body=f"🚨 *PAGO* #{sesion['o']}\nCliente: {nombre}", media_url=[media_url] if media_url else None)
-        res.message(f"¡Gracias {nombre}! Pedido registrado. 🚀")
-        db_delete(num)
+        # Usamos los datos que guardamos en SQLite en el paso anterior
+        orden_id = sesion['o']
+        cantidad = sesion['c']
+        producto = sesion['p_nom']
+        total_pago = sesion['t']
 
-    return str(res)
+        # 1. Guardamos en el Excel
+        hoja_vent.append_row([
+            datetime.now().strftime("%d/%m/%Y %H:%M"), 
+            nombre, 
+            orden_id, 
+            cantidad, 
+            producto, 
+            total_pago
+        ])
+
+        # 2. Enviamos confirmación a la ENCARGADA con todos los detalles
+        mensaje_confirmacion = (
+            f"🚨 *PAGO RECIBIDO*\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"ORDEN: #{orden_id}\n"
+            f"CLIENTE: {nombre}\n"
+            f"DETALLE: {cantidad}x {producto}\n"
+            f"TOTAL: S/ {total_pago:.2f}"
+        )
+        
+        # Enviamos el mensaje con la captura (media_url)
+        client_twilio.messages.create(
+            from_=NUMERO_BOT, 
+            to=NUMERO_ENCARGADA, 
+            body=mensaje_confirmacion, 
+            media_url=[media_url] if media_url else None
+        )
+
+        # 3. Respondemos al CLIENTE
+        res.message(f"¡Gracias {nombre}! Tu pedido de {producto} ha sido registrado. 🚀")
+        
+        # 4. Borramos la sesión de SQLite porque el proceso terminó
+        db_delete(num)
 
 if __name__ == "__main__":
     app.run()
