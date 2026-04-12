@@ -75,7 +75,7 @@ def reply():
     res = MessagingResponse()
     sesion = db_get(num)
 
-     1. MENÚ PRINCIPAL
+    # 1. MENÚ PRINCIPAL
     if not sesion or body.upper() in ["HOLA", "MENU", "REINICIAR"]:
         db_save(num, "menu_principal")
         msg = ("📚 *LIBRERÍA R&V*\n¡Hola André! ¿Qué deseas llevar hoy?\n\n"
@@ -86,7 +86,7 @@ def reply():
         res.message(msg)
         return str(res)
 
-     2. PROCESAR OPCIÓN 1: LISTA CON IA
+    # 2. PROCESAR OPCIÓN 1: LISTA CON IA
     elif sesion["step"] == "esperando_lista":
         precios = hoja_prod.get_all_records()
         resultado = procesar_lista_con_ia(body, precios)
