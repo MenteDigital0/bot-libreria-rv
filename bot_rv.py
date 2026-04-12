@@ -7,7 +7,7 @@ from datetime import datetime
 
 app = Flask(__name__)
 
-# --- BASE DE DATOS SQLITE --
+# --- BASE DE DATOS SQLITE ---
 DB_NAME = "sesiones_bot.db"
 
 def init_db():
@@ -105,12 +105,12 @@ def reply():
             cliente_num, total = busqueda
             if body == "1":
                 client_twilio.messages.create(from_=NUMERO_BOT, to=cliente_num, 
-                    body=f"✅ *¡STOCK CONFIRMADO!*\nTotal: *S/ {total:.2f}*\n\nYapea al *987654321* y envía captura.")
+                    body=f"✅ *¡STOCK CONFIRMADO!*\nTotal: *S/ {total:.2f}*\n\nYapea al *987654321* y envía captura con tu nombre.")
                 db_save(cliente_num, "finalizar", orden=orden_ref, total=total)
                 res.message(f"✅ Confirmaste Orden #{orden_ref}.")
             else:
                 client_twilio.messages.create(from_=NUMERO_BOT, to=cliente_num, 
-                    body="😔 *SIN STOCK*\nNo hay disponibilidad. Escribe MENU.")
+                    body="😔 *SIN STOCK*\nNo hay disponibilidad por ahora. Escribe MENU para ver otras opciones.")
                 db_delete(cliente_num)
                 res.message(f"❌ Cancelaste Orden #{orden_ref}.")
             set_ultima_orden("")
@@ -139,7 +139,7 @@ def reply():
             res.message(txt + "\nElige el número del producto.")
         else: res.message("❌ Elige una opción válida.")
 
-    elif "prod_" in sesion["step"]:
+    elif "prod_" in sesion.get("step", ""):
         cat_sel = sesion["step"].replace("prod_", "")
         datos = [p for p in hoja_prod.get_all_records() if p["Categoría"] == cat_sel]
         idx = int(body) - 1 if body.isdigit() else -1
@@ -147,60 +147,42 @@ def reply():
             p = datos[idx]
             db_save(num, "cant", prod_nom=p['Producto'], total=float(p['Precio']))
             res.message(f"¿Cuántos de *{p['Producto']}*?")
-        else: res.message("❌ Elige un número.")
+        else: res.message("❌ Elige un número válido.")
 
     elif sesion["step"] == "cant":
         if body.isdigit():
-            cant, total = int(body), int(body) * sesion["t"]
+            cant = int(body)
+            total = cant * sesion["t"]
             orden = str(random.randint(1000, 9999))
             db_save(num, "esperando_stock", orden=orden, total=total, prod_nom=sesion["p_nom"], cant=cant)
             set_ultima_orden(orden)
-            res.message("⏳ *Verificando Stock...*")
+            res.message("⏳ *Verificando Stock con la encargada...*")
             client_twilio.messages.create(from_=NUMERO_BOT, to=NUMERO_ENCARGADA, 
                 body=f"❓ *STOCK?* #{orden}\n{cant}x {sesion['p_nom']}\n\n1: SÍ\n2: NO")
         else: res.message("❌ Escribe un número.")
 
-   elif sesion["step"] == "finalizar":
-        nombre = body.title()
-        # Usamos los datos que guardamos en SQLite en el paso anterior
-        orden_id = sesion['o']
-        cantidad = sesion['c']
-        producto = sesion['p_nom']
-        total_pago = sesion['t']
-
-        # 1. Guardamos en el Excel
-        hoja_vent.append_row([
-            datetime.now().strftime("%d/%m/%Y %H:%M"), 
-            nombre, 
-            orden_id, 
-            cantidad, 
-            producto, 
-            total_pago
-        ])
-
-        # 2. Enviamos confirmación a la ENCARGADA con todos los detalles
-        mensaje_confirmacion = (
-            f"🚨 *PAGO RECIBIDO*\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"ORDEN: #{orden_id}\n"
-            f"CLIENTE: {nombre}\n"
-            f"DETALLE: {cantidad}x {producto}\n"
-            f"TOTAL: S/ {total_pago:.2f}"
-        )
+    elif sesion["step"] == "finalizar":
+        nombre_cliente = body.title()
+        # Recuperamos datos de SQLite
+        o_id, cant_f, p_nom_f, total_f = sesion['o'], sesion['c'], sesion['p_nom'], sesion['t']
         
-        # Enviamos el mensaje con la captura (media_url)
-        client_twilio.messages.create(
-            from_=NUMERO_BOT, 
-            to=NUMERO_ENCARGADA, 
-            body=mensaje_confirmacion, 
-            media_url=[media_url] if media_url else None
-        )
-
-        # 3. Respondemos al CLIENTE
-        res.message(f"¡Gracias {nombre}! Tu pedido de {producto} ha sido registrado. 🚀")
+        # Guardamos en Excel
+        hoja_vent.append_row([datetime.now().strftime("%d/%m/%Y %H:%M"), nombre_cliente, o_id, cant_f, p_nom_f, total_f])
         
-        # 4. Borramos la sesión de SQLite porque el proceso terminó
+        # Notificamos a la encargada con el resumen y la captura
+        resumen = (f"🚨 *PAGO RECIBIDO*\n"
+                   f"Orden: #{o_id}\n"
+                   f"Cliente: {nombre_cliente}\n"
+                   f"Pedido: {cant_f}x {p_nom_f}\n"
+                   f"Total: S/ {total_f:.2f}")
+        
+        client_twilio.messages.create(from_=NUMERO_BOT, to=NUMERO_ENCARGADA, 
+                                      body=resumen, media_url=[media_url] if media_url else None)
+        
+        res.message(f"¡Gracias {nombre_cliente}! Tu pedido ha sido registrado con éxito. 🚀")
         db_delete(num)
+
+    return str(res)
 
 if __name__ == "__main__":
     app.run()
