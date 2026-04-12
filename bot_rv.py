@@ -55,16 +55,18 @@ def procesar_lista_con_ia(texto_usuario, lista_precios):
     Eres el asistente de Librería R&V. Basado en esta lista de precios: {lista_precios}.
     Analiza el pedido del cliente: "{texto_usuario}".
     Extrae los productos, cantidades y calcula el total. 
-    Responde ÚNICAMENTE en formato JSON: 
+    Responde ÚNICAMENTE en formato JSON plano, sin bloques de código markdown: 
     {{"total": 0.0, "items_encontrados": ["2x Cuaderno (S/ 10.00)"], "no_encontrados": ["item"]}}
     """
-    response = model_ai.generate_content(prompt)
     try:
-       # Limpiamos la respuesta para quedarnos solo con el JSON
-        json_data = re.search(r'\{.*\}', response.text, re.DOTALL).group()
-        return json.loads(json_data)
-    except:
-        return {"total": 0.0, "items_encontrados": [], "no_encontrados": ["Error al procesar"]}
+        response = model_ai.generate_content(prompt)
+        # Limpieza profunda: eliminamos backticks y la palabra json si aparecen
+        limpio = response.text.replace("```json", "").replace("```", "").strip()
+        return json.loads(limpio)
+    except Exception as e:
+        print(f"Error crítico en IA: {e}")
+        # Retorno de emergencia para que el bot no se quede callado
+        return {"total": 0.0, "items_encontrados": [], "no_encontrados": ["Error técnico"]}
 
 @app.route("/whatsapp", methods=['POST'])
 def reply():
