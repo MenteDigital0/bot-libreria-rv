@@ -10,7 +10,7 @@ app = Flask(__name__)
 
 # --- CONFIGURACIÓN IA ---
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
-model_ai = genai.GenerativeModel('gemini-1.5-flash')
+model_ai = genai.GenerativeModel('gemini-1.5-flash-latest')
 
 # --- CONFIGURACIÓN GOOGLE & TWILIO ---
 json_env = os.environ.get('GOOGLE_JSON_CONTENT')
@@ -59,53 +59,44 @@ def db_delete(num):
 def procesar_lista_con_ia(texto_usuario, lista_precios):
     datos_ia = []
     for f in lista_precios:
-        # Ahora usamos los nuevos nombres de tus columnas
-        nombre = f.get('Producto')
-        precio = f.get('Precio Venta') # Cambiado de 'Precio' a 'Precio Venta'
-        marca = f.get('Marca', '')
-        #stock = f.get('Stock Actual', 1) # Por si quieres que la IA sepa si hay stock
-
+        # Usando tus títulos: ID, Categoría, Producto, Precio, Marca
+        nombre = f.get('Producto', '').strip()
+        precio = f.get('Precio')
+        marca = f.get('Marca', '').strip()
+        
         if nombre and precio:
             try:
-                # Limpieza de precio por si tiene S/
-                p_limpio = float(str(precio).replace('S/', '').strip())
-                # Le pasamos a la IA el nombre + marca para que sea más precisa
+                p_limpio = float(str(precio).replace('S/', '').replace(',', '').strip())
                 datos_ia.append({"n": f"{nombre} {marca}".strip(), "p": p_limpio})
             except:
                 continue
 
-    # El resto del prompt se mantiene igual...
-
-    # 2. Prompt mejorado para que no sea estricto
     prompt = f"""
     Eres el asistente de 'Librería R&V'.
-    STOCK DISPONIBLE: {json.dumps(datos_ia)}
-    
-    PEDIDO DEL CLIENTE: "{texto_usuario}"
-    
-    INSTRUCCIONES:
-    1. Relaciona los productos del pedido con el stock (ej: "cuaderno" -> "Cuaderno A4").
-    2. Calcula: cantidad * precio.
-    3. Responde ÚNICAMENTE este formato JSON:
-    {{
-      "total": 0.0, 
-      "items_encontrados": ["2x NombreExacto (S/ 0.00)"], 
-      "no_encontrados": []
-    }}
-    
-    Si no encuentras nada parecido, usa "no_encontrados". No inventes productos.
+    STOCK: {json.dumps(datos_ia)}
+    PEDIDO: "{texto_usuario}"
+    Responde ÚNICAMENTE un JSON:
+    {{"total": 0.0, "items_encontrados": ["1x Producto (S/ 0.00)"], "no_encontrados": []}}
     """
 
     try:
+        # Forzamos una respuesta rápida
         response = model_ai.generate_content(prompt)
-        # Extraemos el JSON sin importar si la IA puso texto antes o después
+        
+        # Si la respuesta está vacía o bloqueada
+        if not response.text:
+            return {"total": 0.0, "items_encontrados": [], "no_encontrados": ["IA no respondió"]}
+
         match = re.search(r'\{.*\}', response.text, re.DOTALL)
         if match:
             return json.loads(match.group())
-        return {"total": 0, "items_encontrados": [], "no_encontrados": ["Error de formato"]}
+        
+        return {"total": 0.0, "items_encontrados": [], "no_encontrados": ["Error formato JSON"]}
+
     except Exception as e:
-        print(f"Error en IA: {e}")
-        return {"total": 0, "items_encontrados": [], "no_encontrados": ["Error de conexión"]}
+        # Este print saldrá en tus logs de Render para ver el nuevo error si ocurre
+        print(f"Error real en Gemini: {e}")
+        return {"total": 0.0, "items_encontrados": [], "no_encontrados": [f"Error: {str(e)[:20]}"]}
 @app.route("/whatsapp", methods=['POST'])
 def reply():
     num = request.form.get('From')
