@@ -57,21 +57,24 @@ def db_delete(num):
 
 # --- FUNCIÓN IA MEJORADA ---
 def procesar_lista_con_ia(texto_usuario, lista_precios):
-    # 1. Limpieza agresiva de datos del Excel
     datos_ia = []
     for f in lista_precios:
-        # Buscamos el nombre del producto en cualquier columna que parezca tenerlo
-        nombre = f.get('Producto') or f.get('producto') or f.get('PRODUCTO')
-        # Buscamos el precio. Si la columna no tiene nombre (como en tu foto), gspread usa "" (cadena vacía)
-        precio = f.get('Precio') or f.get('precio') or f.get('') 
-        
+        # Ahora usamos los nuevos nombres de tus columnas
+        nombre = f.get('Producto')
+        precio = f.get('Precio Venta') # Cambiado de 'Precio' a 'Precio Venta'
+        marca = f.get('Marca', '')
+        #stock = f.get('Stock Actual', 1) # Por si quieres que la IA sepa si hay stock
+
         if nombre and precio:
             try:
-                # Limpiamos el precio de símbolos S/ o comas
-                precio_num = float(str(precio).replace('S/', '').replace(',', '').strip())
-                datos_ia.append({"n": str(nombre).strip(), "p": precio_num})
+                # Limpieza de precio por si tiene S/
+                p_limpio = float(str(precio).replace('S/', '').strip())
+                # Le pasamos a la IA el nombre + marca para que sea más precisa
+                datos_ia.append({"n": f"{nombre} {marca}".strip(), "p": p_limpio})
             except:
                 continue
+
+    # El resto del prompt se mantiene igual...
 
     # 2. Prompt mejorado para que no sea estricto
     prompt = f"""
