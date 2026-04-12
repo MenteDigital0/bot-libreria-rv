@@ -51,19 +51,25 @@ def db_get(num):
 
 def db_delete(num):
     conn = sqlite3.connect(DB_NAME)
-    conn.execute("DELETE FROM sesiones WHERE num = ?", (num,)).close()
+    conn.execute("DELETE FROM sesiones WHERE num = ?", (num,))
     conn.commit()
     conn.close()
 
+# --- FUNCIÓN IA MEJORADA ---
 def procesar_lista_con_ia(texto_usuario, lista_precios):
-    datos_ia = [{"n": f.get('Producto'), "p": f.get('Precio', 0) if f.get('Precio') else f.get('', 0)} for f in lista_precios if f.get('Producto')]
-    prompt = f"Librería R&V. Stock: {json.dumps(datos_ia)}. Pedido: '{texto_usuario}'. Responde solo JSON: {{\"total\": 0.0, \"items_encontrados\": [\"2x Producto (S/ 0.00)\"], \"no_encontrados\": []}}"
+    datos_ia = []
+    for f in lista_precios:
+        n = f.get('Producto', '').strip()
+        p = f.get('Precio') if f.get('Precio') else f.get('', 0)
+        if n: datos_ia.append({"nombre": n, "precio": p})
+
+    prompt = f"Librería R&V. Stock: {json.dumps(datos_ia)}. Pedido: '{texto_usuario}'. Responde SOLO JSON plano: {{\"total\": 0.0, \"items_encontrados\": [\"2x Producto (S/ 0.00)\"], \"no_encontrados\": []}}"
     try:
         response = model_ai.generate_content(prompt)
         match = re.search(r'\{.*\}', response.text, re.DOTALL)
-        return json.loads(match.group()) if match else {"total":0,"items_encontrados":[],"no_encontrados":["Error"]}
+        return json.loads(match.group()) if match else {"total": 0, "items_encontrados": [], "no_encontrados": ["Error"]}
     except:
-        return {"total":0,"items_encontrados":[],"no_encontrados":["Error"]}
+        return {"total": 0, "items_encontrados": [], "no_encontrados": ["Error"]}
 
 @app.route("/whatsapp", methods=['POST'])
 def reply():
@@ -77,10 +83,7 @@ def reply():
     # 1. INICIO
     if not sesion or body.upper() in ["HOLA", "MENU", "REINICIAR"]:
         db_save(num, "menu_principal")
-        msg = ("📚 *LIBRERÍA R&V*\n¡Hola André! ¿Qué deseas llevar?\n\n"
-               "1️⃣ *Enviar Lista:* Cotización con IA.\n"
-               "2️⃣ *Regalos:* Detalles especiales.\n"
-               "3️⃣ *Compra Rápida:* Productos por unidad.")
+        msg = ("📚 *LIBRERÍA R&V*\n¡Hola André!\n\n1️⃣ *Lista con IA*\n2️⃣ *Regalos*\n3️⃣ *Compra Rápida*")
         res.message(msg)
         return str(res)
 
@@ -91,31 +94,43 @@ def reply():
             res.message("📝 *MODO LISTA*\nEscribe tus útiles ahora.")
         elif body == "2":
             datos = hoja_regalos.get_all_records()
-            cats = sorted(list(set([r["Categoría"] for r in datos])))
+            cats = sorted(list(set([r["Categoría"] for r in datos if r.get("Categoría")])))
             db_save(num, "regalo_cat")
-            txt = "💝 *CATEGORÍAS REGALOS*\n" + "\n".join([f"*{i+1}.* {c}" for i, c in enumerate(cats)])
+            txt = "💝 *REGALOS*\n" + "\n".join([f"*{i+1}.* {c}" for i, c in enumerate(cats)])
             res.message(txt + "\nElige un número.")
         elif body == "3":
             datos = hoja_prod.get_all_records()
             cats = sorted(list(set([p["Categoría"] for p in datos if p.get("Categoría")])))
             db_save(num, "prod_cat")
-            txt = "🛍️ *CATEGORÍAS ÚTILES*\n" + "\n".join([f"*{i+1}.* {c}" for i, c in enumerate(cats)])
+            txt = "🛍️ *ÚTILES*\n" + "\n".join([f"*{i+1}.* {c}" for i, c in enumerate(cats)])
             res.message(txt + "\nElige un número.")
         else:
             res.message("❌ Elige 1, 2 o 3.")
         return str(res)
 
-    # 3. FLUJO COMPRA RÁPIDA (OPCIÓN 3)
+    # 3. LISTA CON IA
+    elif sesion["step"] == "esperando_lista":
+        res_ia = procesar_lista_con_ia(body, hoja_prod.get_all_records())
+        if not res_ia.get('items_encontrados'):
+            res.message("❌ No encontré esos productos. Intenta de nuevo.")
+            return str(res)
+        orden = str(random.randint(1000, 9999))
+        db_save(num, "seleccion_pago", orden=orden, total=res_ia['total'], prod_nom=f"LISTA #{orden}", cant=len(res_ia['items_encontrados']))
+        txt_res = "\n".join(res_ia['items_encontrados'])
+        res.message(f"📝 *ORDEN #{orden}*\n{txt_res}\n\n💰 *Total: S/ {res_ia['total']:.2f}*\n\n1. Yape\n2. Efectivo")
+        return str(res)
+
+    # 4. COMPRA RÁPIDA
     elif sesion["step"] == "prod_cat":
         datos = hoja_prod.get_all_records()
         cats = sorted(list(set([p["Categoría"] for p in datos if p.get("Categoría")])))
         idx = int(body)-1 if body.isdigit() else -1
         if 0 <= idx < len(cats):
-            cat_sel = cats[idx]
-            items = [p for p in datos if p.get("Categoría") == cat_sel]
-            txt = f"📦 *{cat_sel}*\n" + "\n".join([f"*{i+1}.* {p['Producto']} - S/ {p['Precio']}" for i, p in enumerate(items)])
-            db_save(num, f"prod_item_{cat_sel}")
-            res.message(txt + "\nElige el número del producto.")
+            c_sel = cats[idx]
+            items = [p for p in datos if p.get("Categoría") == c_sel]
+            txt = f"📦 *{c_sel}*\n" + "\n".join([f"*{i+1}.* {p['Producto']} - S/ {p['Precio']}" for i, p in enumerate(items)])
+            db_save(num, f"prod_item_{c_sel}")
+            res.message(txt + "\nElige un número.")
         else: res.message("❌ Elige un número válido.")
         return str(res)
 
@@ -125,12 +140,54 @@ def reply():
         idx = int(body)-1 if body.isdigit() else -1
         if 0 <= idx < len(items):
             it = items[idx]
-            db_save(num, "seleccion_pago", orden=str(random.randint(1000,9999)), total=float(it['Precio']), prod_nom=it['Producto'], cant=1)
+            db_save(num, "seleccion_pago", orden=str(random.randint(1000, 9999)), total=float(it['Precio']), prod_nom=it['Producto'], cant=1)
             res.message(f"Elegiste: *{it['Producto']}*\nTotal: S/ {it['Precio']}\n\n1. Yape\n2. Efectivo")
         else: res.message("❌ Opción inválida.")
         return str(res)
 
-    # (Aquí siguen las funciones de regalo_cat, esperando_lista, seleccion_pago y finalizar...)
-    # [Para ahorrar espacio, mantengo la misma lógica de pago y cierre que ya tienes]
-    
-    return str(res) # Cierre de seguridad
+    # 5. REGALOS
+    elif sesion["step"] == "regalo_cat":
+        datos = hoja_regalos.get_all_records()
+        cats = sorted(list(set([r["Categoría"] for r in datos if r.get("Categoría")])))
+        idx = int(body)-1 if body.isdigit() else -1
+        if 0 <= idx < len(cats):
+            c_sel = cats[idx]
+            items = [r for r in datos if r.get("Categoría") == c_sel]
+            txt = f"🎁 *{c_sel}*\n" + "\n".join([f"*{i+1}.* {r['Detalle']} - S/ {r['Precio']}" for i, r in enumerate(items)])
+            db_save(num, f"regalo_item_{c_sel}")
+            res.message(txt + "\nElige un número.")
+        else: res.message("❌ Elige un número válido.")
+        return str(res)
+
+    elif "regalo_item_" in sesion["step"]:
+        cat = sesion["step"].replace("regalo_item_", "")
+        items = [r for r in hoja_regalos.get_all_records() if r.get("Categoría") == cat]
+        idx = int(body)-1 if body.isdigit() else -1
+        if 0 <= idx < len(items):
+            it = items[idx]
+            db_save(num, "seleccion_pago", orden=str(random.randint(1000, 9999)), total=float(it['Precio']), prod_nom=f"REGALO: {it['Detalle']}", cant=1)
+            res.message(f"Elegiste: *{it['Detalle']}*\nTotal: S/ {it['Precio']}\n\n1. Yape\n2. Efectivo")
+        return str(res)
+
+    # 6. PAGO Y CIERRE
+    elif sesion["step"] == "seleccion_pago":
+        metodos = {"1": "YAPE", "2": "EFECTIVO"}
+        pago = metodos.get(body, "YAPE")
+        db_save(num, "finalizar", orden=sesion['o'], total=sesion['t'], prod_nom=f"{sesion['p_nom']} ({pago})", cant=sesion['c'])
+        res.message(f"✅ Pago: {pago}. Envía tu *NOMBRE* para registrar.")
+        return str(res)
+
+    elif sesion["step"] == "finalizar":
+        nombre, fecha = body.title(), datetime.now().strftime("%d/%m/%Y %H:%M")
+        hoja = hoja_v_listas if "LISTA" in sesion['p_nom'] else (hoja_v_regalos if "REGALO" in sesion['p_nom'] else hoja_v_utiles)
+        hoja.append_row([fecha, nombre, sesion['o'], sesion['c'], sesion['p_nom'], sesion['t']])
+        notif = f"🚀 VENTA #{sesion['o']} - {nombre}\nTotal: S/ {sesion['t']}"
+        client_twilio.messages.create(from_=NUMERO_BOT, to=NUMERO_ENCARGADA, body=notif, media_url=[media_url] if media_url else None)
+        res.message(f"¡Gracias {nombre}! Pedido #{sesion['o']} listo. 🚀")
+        db_delete(num)
+        return str(res)
+
+    return str(res)
+
+if __name__ == "__main__":
+    app.run()
