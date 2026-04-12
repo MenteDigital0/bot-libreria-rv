@@ -57,20 +57,52 @@ def db_delete(num):
 
 # --- FUNCIÓN IA MEJORADA ---
 def procesar_lista_con_ia(texto_usuario, lista_precios):
+    # 1. Limpieza agresiva de datos del Excel
     datos_ia = []
     for f in lista_precios:
-        n = f.get('Producto', '').strip()
-        p = f.get('Precio') if f.get('Precio') else f.get('', 0)
-        if n: datos_ia.append({"nombre": n, "precio": p})
+        # Buscamos el nombre del producto en cualquier columna que parezca tenerlo
+        nombre = f.get('Producto') or f.get('producto') or f.get('PRODUCTO')
+        # Buscamos el precio. Si la columna no tiene nombre (como en tu foto), gspread usa "" (cadena vacía)
+        precio = f.get('Precio') or f.get('precio') or f.get('') 
+        
+        if nombre and precio:
+            try:
+                # Limpiamos el precio de símbolos S/ o comas
+                precio_num = float(str(precio).replace('S/', '').replace(',', '').strip())
+                datos_ia.append({"n": str(nombre).strip(), "p": precio_num})
+            except:
+                continue
 
-    prompt = f"Librería R&V. Stock: {json.dumps(datos_ia)}. Pedido: '{texto_usuario}'. Responde SOLO JSON plano: {{\"total\": 0.0, \"items_encontrados\": [\"2x Producto (S/ 0.00)\"], \"no_encontrados\": []}}"
+    # 2. Prompt mejorado para que no sea estricto
+    prompt = f"""
+    Eres el asistente de 'Librería R&V'.
+    STOCK DISPONIBLE: {json.dumps(datos_ia)}
+    
+    PEDIDO DEL CLIENTE: "{texto_usuario}"
+    
+    INSTRUCCIONES:
+    1. Relaciona los productos del pedido con el stock (ej: "cuaderno" -> "Cuaderno A4").
+    2. Calcula: cantidad * precio.
+    3. Responde ÚNICAMENTE este formato JSON:
+    {{
+      "total": 0.0, 
+      "items_encontrados": ["2x NombreExacto (S/ 0.00)"], 
+      "no_encontrados": []
+    }}
+    
+    Si no encuentras nada parecido, usa "no_encontrados". No inventes productos.
+    """
+
     try:
         response = model_ai.generate_content(prompt)
+        # Extraemos el JSON sin importar si la IA puso texto antes o después
         match = re.search(r'\{.*\}', response.text, re.DOTALL)
-        return json.loads(match.group()) if match else {"total": 0, "items_encontrados": [], "no_encontrados": ["Error"]}
-    except:
-        return {"total": 0, "items_encontrados": [], "no_encontrados": ["Error"]}
-
+        if match:
+            return json.loads(match.group())
+        return {"total": 0, "items_encontrados": [], "no_encontrados": ["Error de formato"]}
+    except Exception as e:
+        print(f"Error en IA: {e}")
+        return {"total": 0, "items_encontrados": [], "no_encontrados": ["Error de conexión"]}
 @app.route("/whatsapp", methods=['POST'])
 def reply():
     num = request.form.get('From')
