@@ -7,7 +7,7 @@ from datetime import datetime
 
 app = Flask(__name__)
 
-# --- BASE DE DATOS SQLITE ---
+# --- BASE DE DATOS SQLITE (Persistencia de Sesión) ---
 DB_NAME = "sesiones_bot.db"
 
 def init_db():
@@ -50,8 +50,9 @@ client_gs = gspread.authorize(creds)
 spreadsheet = client_gs.open("Libreria RV Datos")
 hoja_prod = spreadsheet.worksheet("Productos")
 hoja_regalos = spreadsheet.worksheet("Regalos")
-hoja_ventas_utiles = spreadsheet.worksheet("Ventas")
-hoja_ventas_regalos = spreadsheet.worksheet("Ventas_Regalos")
+hoja_v_utiles = spreadsheet.worksheet("Ventas")
+hoja_v_regalos = spreadsheet.worksheet("Ventas_Regalos")
+hoja_v_listas = spreadsheet.worksheet("Ventas_Listas")
 
 ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID')
 AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN')
@@ -71,10 +72,10 @@ def reply():
     # 1. MENÚ PRINCIPAL
     if not sesion or body in ["HOLA", "MENU", "REINICIAR"]:
         db_save(num, "menu_principal")
-        msg = ("📚 *LIBRERÍA R&V*\n¡Hola! ¿Qué deseas llevar hoy?\n\n"
-               "1️⃣ *Enviar Lista:* Cotizamos tus útiles.\n"
-               "2️⃣ *Regalos:* Detalles para toda ocasión.\n"
-               "3️⃣ *Producto Único:* Compra algo específico.\n"
+        msg = ("📚 *LIBRERÍA R&V*\n¡Hola! ¿Qué deseas llevar?\n\n"
+               "1️⃣ *Enviar Lista:* Sumamos tus útiles automáticamente.\n"
+               "2️⃣ *Regalos:* Detalles por categorías.\n"
+               "3️⃣ *Producto Único:* Compra algo rápido.\n"
                "4️⃣ *Consultas:* Hablar con nosotros.")
         res.message(msg)
         return str(res)
@@ -83,7 +84,7 @@ def reply():
     elif sesion["step"] == "menu_principal":
         if body == "1":
             db_save(num, "esperando_lista")
-            res.message("📝 *MODO LISTA*\nEscribe todos tus útiles aquí. La encargada te responderá pronto.")
+            res.message("📝 *MODO LISTA*\nEscribe tus productos (uno por línea).\nEjemplo:\nCuaderno Standford\nLápiz Faber\nBorrador")
         elif body == "2":
             datos = hoja_regalos.get_all_records()
             categorias = list(set([r["Categoría"] for r in datos]))
@@ -98,63 +99,87 @@ def reply():
             txt = "🛍️ *PRODUCTOS*\n"
             for i, cat in enumerate(categorias, 1): txt += f"*{i}.* {cat}\n"
             res.message(txt + "\nElige una categoría.")
-        else: res.message("❌ Opción inválida. Elige 1, 2, 3 o 4.")
+        else: res.message("❌ Elige una opción válida (1-4).")
 
-    # 3. SUB-MENÚ REGALOS (Categorías)
+    # 3. PROCESAR LISTA (SUMA AUTOMÁTICA)
+    elif sesion["step"] == "esperando_lista":
+        items_tienda = hoja_prod.get_all_records()
+        lineas = body.split("\n")
+        total = 0
+        encontrados = []
+        no_encontrados = []
+
+        for l in lineas:
+            match = next((p for p in items_tienda if p['Producto'].upper() in l), None)
+            if match:
+                total += float(match['Precio'])
+                encontrados.append(match['Producto'])
+            else:
+                no_encontrados.append(l[:15])
+
+        orden = str(random.randint(1000, 9999))
+        txt_resumen = f"📝 *ORDEN #{orden}*\n" + "\n".join([f"✅ {e}" for e in encontrados])
+        if no_encontrados: txt_resumen += f"\n\n⚠️ *A CONSULTAR:* {', '.join(no_encontrados)}"
+        txt_resumen += f"\n\n💰 *SUBTOTAL ESTIMADO: S/ {total:.2f}*"
+        
+        db_save(num, "seleccion_pago", orden=orden, total=total, prod_nom="LISTA DE UTILES", cant=len(encontrados))
+        res.message(f"{txt_resumen}\n\n*¿Cómo deseas pagar?*\n1. Yape/Plin\n2. Tarjeta (Link)\n3. Efectivo (Contraentrega)")
+
+    # 4. SUB-MENÚ REGALOS
     elif sesion["step"] == "regalo_cat":
-        datos_todos = hoja_regalos.get_all_records()
-        categorias = list(set([r["Categoría"] for r in datos_todos]))
+        datos = hoja_regalos.get_all_records()
+        categorias = list(set([r["Categoría"] for r in datos]))
         idx = int(body) - 1 if body.isdigit() else -1
         if 0 <= idx < len(categorias):
             cat_sel = categorias[idx]
-            regalos_filtrados = [r for r in datos_todos if r["Categoría"] == cat_sel]
-            txt = f"🎁 *REGALOS: {cat_sel}*\n"
-            for i, r in enumerate(regalos_filtrados, 1):
-                txt += f"*{i}.* {r['Detalle']} - S/ {r['Precio']:.2f}\n"
+            filtrados = [r for r in datos if r["Categoría"] == cat_sel]
+            txt = f"🎁 *{cat_sel}*\n"
+            for i, r in enumerate(filtrados, 1): txt += f"*{i}.* {r['Detalle']} - S/ {r['Precio']:.2f}\n"
             db_save(num, f"regalo_item_{cat_sel}")
-            res.message(txt + "\nElige el número del regalo.")
-        else: res.message("❌ Elige una categoría válida.")
+            res.message(txt)
+        else: res.message("❌ Categoría no válida.")
 
-    # 4. SELECCIÓN DE REGALO ESPECÍFICO
     elif "regalo_item_" in sesion["step"]:
-        cat_sel = sesion["step"].replace("regalo_item_", "")
-        regalos_filtrados = [r for r in hoja_regalos.get_all_records() if r["Categoría"] == cat_sel]
+        cat = sesion["step"].replace("regalo_item_", "")
+        filtrados = [r for r in hoja_regalos.get_all_records() if r["Categoría"] == cat]
         idx = int(body) - 1 if body.isdigit() else -1
-        if 0 <= idx < len(regalos_filtrados):
-            r = regalos_filtrados[idx]
-            # Marcamos prod_nom con prefijo REGALO para filtrado posterior
-            db_save(num, "finalizar", orden=str(random.randint(1000, 9999)), prod_nom=f"REGALO: {r['Detalle']}", total=float(r['Precio']), cant=1)
-            res.message(f"Elegiste: *{r['Detalle']}*\nTotal: S/ {float(r['Precio']):.2f}\n\nYapea al *987654321* y envía *NOMBRE + CAPTURA*.")
-        else: res.message("❌ Número inválido.")
+        if 0 <= idx < len(filtrados):
+            r = filtrados[idx]
+            db_save(num, "seleccion_pago", orden=str(random.randint(1000, 9999)), total=float(r['Precio']), prod_nom=f"REGALO: {r['Detalle']}", cant=1)
+            res.message(f"Has elegido: *{r['Detalle']}*\nTotal: S/ {r['Precio']:.2f}\n\n*¿Cómo pagar?*\n1. Yape/Plin\n2. Tarjeta\n3. Efectivo")
+        else: res.message("❌ Número no válido.")
 
-    # 5. FLUJO DE LISTA
-    elif sesion["step"] == "esperando_lista":
-        orden = str(random.randint(1000, 9999))
-        db_save(num, "finalizar", orden=orden, prod_nom=f"LISTA: {body[:30]}...")
-        client_twilio.messages.create(from_=NUMERO_BOT, to=NUMERO_ENCARGADA,
-            body=f"📝 *NUEVA LISTA* #{orden}\nCliente: {num}\nPedido:\n{body}")
-        res.message("✅ Lista recibida. Envía tu *NOMBRE + CAPTURA* del pago una vez la encargada te dé el monto.")
-
-    # 6. FINALIZAR (Validación de Imagen y Registro)
-    elif sesion["step"] == "finalizar":
-        if not media_url:
-            res.message("⚠️ *¡FALTA LA CAPTURA!* Por favor, vuelve a enviar tu nombre pero esta vez *adjunta la imagen* de tu pago.")
-            return str(res)
+    # 5. SELECCIÓN DE PAGO
+    elif sesion["step"] == "seleccion_pago":
+        metodos = {"1": "YAPE", "2": "TARJETA", "3": "EFECTIVO"}
+        pago = metodos.get(body, "YAPE")
+        db_save(num, "finalizar", orden=sesion['o'], total=sesion['t'], prod_nom=f"{sesion['p_nom']} ({pago})", cant=sesion['c'])
         
+        instruccion = "envía tu nombre y la captura del Yape." if pago != "EFECTIVO" else "envía tu nombre para confirmar."
+        res.message(f"✅ Método: *{pago}*.\nPara terminar, {instruccion}")
+
+    # 6. FINALIZAR Y NOTIFICAR
+    elif sesion["step"] == "finalizar":
+        if "EFECTIVO" not in sesion['p_nom'] and not media_url:
+            res.message("⚠️ *¡Captura obligatoria!* Envía tu nombre adjuntando la foto de tu pago.")
+            return str(res)
+
         nombre = body.title()
         fecha = datetime.now().strftime("%d/%m/%Y %H:%M")
         
-        # Filtrar hoja de destino
-        hoja_destino = hoja_ventas_regalos if "REGALO" in sesion['p_nom'] else hoja_ventas_utiles
-        hoja_destino.append_row([fecha, nombre, sesion['o'], sesion['c'], sesion['p_nom'], sesion['t']])
+        # Selección de hoja
+        if "LISTA" in sesion['p_nom']: hoja = hoja_v_listas
+        elif "REGALO" in sesion['p_nom']: hoja = hoja_v_regalos
+        else: hoja = hoja_v_utiles
+        
+        hoja.append_row([fecha, nombre, sesion['o'], sesion['c'], sesion['p_nom'], sesion['t']])
 
-        # Alerta a encargada con Link
+        # Alerta a Encargada
         wa_link = f"https://wa.me/{num_limpio}"
-        resumen = (f"🚨 *NUEVO PAGO*\nCliente: {nombre}\nPedido: {sesion['p_nom']}\nTotal: S/ {sesion['t']:.2f}\nChat: {wa_link}")
+        notificacion = (f"🚀 *NUEVO PEDIDO #{sesion['o']}*\n👤 Cliente: {nombre}\n📦: {sesion['p_nom']}\n💰: S/ {sesion['t']:.2f}\n📱 Chat: {wa_link}")
+        client_twilio.messages.create(from_=NUMERO_BOT, to=NUMERO_ENCARGADA, body=notificacion, media_url=[media_url] if media_url else None)
         
-        client_twilio.messages.create(from_=NUMERO_BOT, to=NUMERO_ENCARGADA, body=resumen, media_url=[media_url])
-        
-        res.message(f"¡Gracias {nombre}! Pedido registrado. Nos comunicaremos contigo pronto. 🚀")
+        res.message(f"¡Gracias {nombre}! Pedido registrado. La encargada te contactará pronto. 🚀")
         db_delete(num)
 
     return str(res)
