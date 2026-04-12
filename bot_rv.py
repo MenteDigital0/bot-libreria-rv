@@ -60,7 +60,7 @@ def procesar_lista_con_ia(texto_usuario, lista_precios):
     """
     response = model_ai.generate_content(prompt)
     try:
-        Limpiamos la respuesta para quedarnos solo con el JSON
+       # Limpiamos la respuesta para quedarnos solo con el JSON
         json_data = re.search(r'\{.*\}', response.text, re.DOTALL).group()
         return json.loads(json_data)
     except:
